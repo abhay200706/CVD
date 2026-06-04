@@ -40,12 +40,12 @@ def analyze_spectrum(uploaded_file):
     x_use = x - x[max_idx]
 
     # ── Smoothing ───────────────────────────────────────────
-    y_smooth = savgol_filter(y, 21, 3)
+    y_smooth = savgol_filter(y, 11, 2)
 
     # ── Baseline ────────────────────────────────────────────
-    baseline = savgol_filter(y_smooth, 151, 3)
+    baseline = savgol_filter(y_smooth, 301, 3)
     signal   = y_smooth - baseline
-    signal   = np.clip(signal, 0, None)
+    # signal = np.clip(signal, 0, None)
 
     # ── Noise (original region 700–1200) ────────────────────
     noise_region = signal[(x_use > 700) & (x_use < 1200)]
@@ -129,6 +129,7 @@ def analyze_spectrum(uploaded_file):
         "x_use":    x_use,
         "y_raw":    y,
         "y_smooth": y_smooth,
+        "baseline": baseline,
         "signal":   signal,
         "peaks":    final_peaks
     }
@@ -169,67 +170,82 @@ for result in results:
     y_smooth = result["y_smooth"]
     peaks    = result["peaks"]
 
-    # ── Raw + Smooth overlay graph ───────────────────────────
-    fig, ax = plt.subplots(figsize=(13, 5))
+    baseline = result["baseline"]
 
-    ax.plot(x_use, y_raw,
-            color="#4C9BE8",
-            linewidth=0.8,
-            alpha=0.5,
-            label="Raw data",
-            zorder=2)
+    # ── Change 6: Raw spectrum graph ─────────────────────────
+    st.markdown("### Raw Spectrum")
 
-    ax.plot(x_use, y_smooth,
-            color="#E84C4C",
-            linewidth=1.8,
-            alpha=0.92,
-            label="Smoothed",
-            zorder=3)
+    fig_raw, ax_raw = plt.subplots(figsize=(12, 5))
 
-    # Mark detected peaks with vertical dashed lines + labels
-    if peaks:
-        for pk in peaks:
-            sh  = pk["shift"]
-            idx = np.argmin(np.abs(x_use - sh))
-            ax.axvline(sh,
-                       color="#2CA02C",
-                       linewidth=0.9,
-                       linestyle="--",
-                       alpha=0.7,
-                       zorder=1)
-            ax.annotate(
-                f"{sh:.1f}",
-                xy=(sh, y_smooth[idx]),
-                xytext=(3, 8),
-                textcoords="offset points",
-                fontsize=7.5,
-                color="#2CA02C",
-                rotation=90,
-                va="bottom"
-            )
+    ax_raw.plot(
+        x_use,
+        y_raw,
+        color="navy",
+        linewidth=0.8
+    )
 
-    # Axis range & ticks
-    x_min = max(0,    x_use.min() - 20)
-    x_max = min(1000, x_use.max() + 20)
-    ax.set_xlim(x_min, x_max)
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(100))
-    ax.xaxis.set_minor_locator(ticker.MultipleLocator(25))
-    ax.yaxis.set_major_locator(ticker.AutoLocator())
-    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(4))
-    ax.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
-    ax.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
+    ax_raw.set_xlabel("Raman Shift (cm⁻¹)")
+    ax_raw.set_ylabel("Intensity (a.u.)")
+    ax_raw.grid(alpha=0.3)
 
-    ax.grid(which="major", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
-    ax.grid(which="minor", linestyle=":",  linewidth=0.3, color="grey", alpha=0.25)
+    st.pyplot(fig_raw)
+    plt.close(fig_raw)
 
-    ax.set_xlabel("Raman Shift (cm⁻¹)", fontsize=11)
-    ax.set_ylabel("Intensity (a.u.)",    fontsize=11)
-    ax.set_title(f"Raman Spectrum — {result['sample']}",
-                 fontsize=12, fontweight="bold", pad=10)
-    ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
+    # ── Change 5: Baseline-corrected + smoothed overlay ──────
+    raw_corrected    = y_raw    - baseline
+    smooth_corrected = y_smooth - baseline
 
-    fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    raw_corrected    = raw_corrected    / np.max(np.abs(raw_corrected))
+    smooth_corrected = smooth_corrected / np.max(np.abs(smooth_corrected))
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    ax.plot(
+        x_use,
+        raw_corrected,
+        color="black",
+        linewidth=1,
+        label="Baselined spectrum with noise"
+    )
+
+    ax.plot(
+        x_use,
+        smooth_corrected,
+        color="red",
+        linewidth=2,
+        label="Smoothed spectrum"
+    )
+
+    for pk in peaks:
+        sh  = pk["shift"]
+        idx = np.argmin(np.abs(x_use - sh))
+        ax.axvline(
+            sh,
+            color="green",
+            linestyle="--",
+            alpha=0.4
+        )
+        ax.text(
+            sh,
+            smooth_corrected[idx],
+            f"{sh:.1f}",
+            fontsize=8,
+            rotation=90,
+            color="green"
+        )
+
+    ax.set_xlabel("Raman Shift (cm⁻¹)", fontsize=14)
+    ax.set_ylabel("Normalized Intensity", fontsize=14)
+
+    ax.set_title(
+        f"Smoothed Spectrum — {result['sample']}",
+        fontsize=16
+    )
+
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    st.pyplot(fig)
     plt.close(fig)
 
     # ── Peak table for this sample ───────────────────────────
