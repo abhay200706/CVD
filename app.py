@@ -40,12 +40,12 @@ def analyze_spectrum(uploaded_file):
     x_use = x - x[max_idx]
 
     # ── Smoothing ───────────────────────────────────────────
-    y_smooth = savgol_filter(y, 11, 2)
+    y_smooth = savgol_filter(y, 21, 3)
 
     # ── Baseline ────────────────────────────────────────────
-    baseline = savgol_filter(y_smooth, 301, 3)
+    baseline = savgol_filter(y_smooth, 151, 3)
     signal   = y_smooth - baseline
-    # signal = np.clip(signal, 0, None)
+    signal   = np.clip(signal, 0, None)
 
     # ── Noise (original region 700–1200) ────────────────────
     noise_region = signal[(x_use > 700) & (x_use < 1200)]
@@ -66,7 +66,7 @@ def analyze_spectrum(uploaded_file):
         width=2
     )
 
-    candidate_peaks = np.array([p for p in candidate_peaks if x_use[p] > 50])
+    candidate_peaks = np.array([p for p in candidate_peaks if 50 < x_use[p] <= 450])
 
     filtered_peaks = []
     for p in candidate_peaks:
@@ -126,11 +126,9 @@ def analyze_spectrum(uploaded_file):
 
     return {
         "sample":   uploaded_file.name,
-        "x":        x,
         "x_use":    x_use,
         "y_raw":    y,
         "y_smooth": y_smooth,
-        "baseline": baseline,
         "signal":   signal,
         "peaks":    final_peaks
     }
@@ -166,108 +164,72 @@ for result in results:
     st.markdown("---")
     st.subheader(f"Sample: {result['sample']}")
 
-    x        = result["x"]
     x_use    = result["x_use"]
     y_raw    = result["y_raw"]
     y_smooth = result["y_smooth"]
-    baseline = result["baseline"]
-    signal   = result["signal"]
     peaks    = result["peaks"]
 
-    y_max = max(np.max(y_raw) * 1.05, 600)
+    # ── Raw + Smooth overlay graph ───────────────────────────
+    fig, ax = plt.subplots(figsize=(13, 5))
 
-    # ── Graph 1: Original Raw Data ────────────────────────────
-    st.markdown("### Graph 1: Original Raw Data")
+    ax.plot(x_use, y_raw,
+            color="#4C9BE8",
+            linewidth=0.8,
+            alpha=0.5,
+            label="Raw data",
+            zorder=2)
 
-    fig1, ax1 = plt.subplots(figsize=(14, 6))
-    ax1.plot(x, y_raw, color='black', linewidth=0.8)
-    ax1.set_title("Original Raw Raman Spectrum")
-    ax1.set_xlabel("Raman Shift (cm⁻¹)")
-    ax1.set_ylabel("Intensity")
-    ax1.set_xlim(0, 1000)
-    ax1.set_ylim(0, y_max)
-    ax1.grid(alpha=0.3)
-    fig1.tight_layout()
-    st.pyplot(fig1)
-    plt.close(fig1)
+    ax.plot(x_use, y_smooth,
+            color="#E84C4C",
+            linewidth=1.8,
+            alpha=0.92,
+            label="Smoothed",
+            zorder=3)
 
-    # ── Graph 2: Rayleigh Shifted Raw Data ───────────────────
-    st.markdown("### Graph 2: Rayleigh Shifted Raw Data")
+    # Mark detected peaks with vertical dashed lines + labels
+    if peaks:
+        for pk in peaks:
+            sh  = pk["shift"]
+            idx = np.argmin(np.abs(x_use - sh))
+            ax.axvline(sh,
+                       color="#2CA02C",
+                       linewidth=0.9,
+                       linestyle="--",
+                       alpha=0.7,
+                       zorder=1)
+            ax.annotate(
+                f"{sh:.1f}",
+                xy=(sh, y_smooth[idx]),
+                xytext=(3, 8),
+                textcoords="offset points",
+                fontsize=7.5,
+                color="#2CA02C",
+                rotation=90,
+                va="bottom"
+            )
 
-    fig2, ax2 = plt.subplots(figsize=(14, 6))
-    ax2.plot(x_use, y_raw, color='blue', linewidth=0.8)
-    ax2.set_title("Rayleigh Shifted Raw Spectrum")
-    ax2.set_xlabel("Raman Shift (cm⁻¹)")
-    ax2.set_ylabel("Intensity")
-    ax2.set_xlim(0, 1000)
-    ax2.set_ylim(0, y_max)
-    ax2.grid(alpha=0.3)
-    fig2.tight_layout()
-    st.pyplot(fig2)
-    plt.close(fig2)
+    # Axis range & ticks
+    ax.set_xlim(0, 450)
+    ax.set_ylim(0, 500)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(10))
+    ax.yaxis.set_major_locator(ticker.AutoLocator())
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(4))
+    ax.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
+    ax.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
 
-    # ── Graph 3: Raw + Smoothed Overlay ──────────────────────
-    st.markdown("### Graph 3: Raw vs Smoothed Spectrum")
+    ax.grid(which="major", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
+    ax.grid(which="minor", linestyle=":",  linewidth=0.3, color="grey", alpha=0.25)
 
-    fig3, ax3 = plt.subplots(figsize=(14, 6))
-    ax3.plot(x_use, y_raw,    color='black', linewidth=0.8, alpha=0.6, label='Raw Data')
-    ax3.plot(x_use, y_smooth, color='red',   linewidth=2,             label='Smoothed')
-    ax3.set_title("Raw vs Smoothed Spectrum")
-    ax3.set_xlabel("Raman Shift (cm⁻¹)")
-    ax3.set_ylabel("Intensity")
-    ax3.set_xlim(0, 1000)
-    ax3.set_ylim(0, y_max)
-    ax3.legend()
-    ax3.grid(alpha=0.3)
-    fig3.tight_layout()
-    st.pyplot(fig3)
-    plt.close(fig3)
+    ax.set_xlabel("Raman Shift (cm⁻¹)", fontsize=11)
+    ax.set_ylabel("Intensity (a.u.)",    fontsize=11)
+    ax.set_title(f"Raman Spectrum — {result['sample']}",
+                 fontsize=12, fontweight="bold", pad=10)
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
 
-    # ── Graph 4: Baseline Visualization ──────────────────────
-    st.markdown("### Graph 4: Baseline Correction")
-
-    fig4, ax4 = plt.subplots(figsize=(14, 6))
-    ax4.plot(x_use, y_smooth, color='black',  linewidth=1,   label='Smoothed')
-    ax4.plot(x_use, baseline, color='orange', linewidth=2,   label='Baseline')
-    ax4.set_title("Baseline Correction")
-    ax4.set_xlabel("Raman Shift (cm⁻¹)")
-    ax4.set_ylabel("Intensity")
-    ax4.set_xlim(0, 1000)
-    ax4.set_ylim(0, y_max)
-    ax4.legend()
-    ax4.grid(alpha=0.3)
-    fig4.tight_layout()
-    st.pyplot(fig4)
-    plt.close(fig4)
-
-    # ── Graph 5: Final Processed Spectrum with Peaks ─────────
-    st.markdown("### Graph 5: Final Peaks After Lorentzian Fit")
-
-    sig_max = np.max(signal) * 1.05 if np.max(signal) > 0 else 1
-
-    fig5, ax5 = plt.subplots(figsize=(14, 6))
-    ax5.plot(x_use, signal, color='green', linewidth=2, label='Processed Signal')
-
-    for pk in peaks:
-        ax5.scatter(pk["shift"], pk["intensity"], color='red', s=100, zorder=5)
-        ax5.text(
-            pk["shift"],
-            pk["intensity"] + sig_max * 0.02,
-            f"{pk['shift']:.1f}",
-            fontsize=8,
-            rotation=90
-        )
-
-    ax5.set_title("Final Peaks After Lorentzian Fit")
-    ax5.set_xlabel("Raman Shift (cm⁻¹)")
-    ax5.set_ylabel("Intensity")
-    ax5.set_xlim(0, 1000)
-    ax5.set_ylim(0, sig_max)
-    ax5.legend()
-    ax5.grid(alpha=0.3)
-    fig5.tight_layout()
-    st.pyplot(fig5)
-    plt.close(fig5)
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
     # ── Peak table for this sample ───────────────────────────
     if peaks:
@@ -328,9 +290,9 @@ for i, result in enumerate(results):
 
 ax2.set_yticks(range(n_samples))
 ax2.set_yticklabels(sample_names, fontsize=10)
-ax2.set_xlim(0, 1000)
-ax2.xaxis.set_major_locator(ticker.MultipleLocator(100))
-ax2.xaxis.set_minor_locator(ticker.MultipleLocator(25))
+ax2.set_xlim(0, 450)
+ax2.xaxis.set_major_locator(ticker.MultipleLocator(50))
+ax2.xaxis.set_minor_locator(ticker.MultipleLocator(10))
 ax2.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
 ax2.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
 ax2.grid(which="major", axis="x", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
