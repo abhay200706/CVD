@@ -124,13 +124,23 @@ def analyze_spectrum(uploaded_file):
 
     final_peaks.sort(key=lambda p: p["shift"])
 
+    # ── Build Lorentzian fit curves for each peak ────────────
+    fit_curves = []
+    for pk in final_peaks:
+        x0    = pk["shift"]
+        gamma = pk["fwhm"] / 2
+        A     = pk["intensity"]
+        curve = lorentzian(x_use, x0, gamma, A)
+        fit_curves.append(curve)
+
     return {
-        "sample":   uploaded_file.name,
-        "x_use":    x_use,
-        "y_raw":    y,
-        "y_smooth": y_smooth,
-        "signal":   signal,
-        "peaks":    final_peaks
+        "sample":     uploaded_file.name,
+        "x_use":      x_use,
+        "y_raw":      y,
+        "y_smooth":   y_smooth,
+        "signal":     signal,
+        "peaks":      final_peaks,
+        "fit_curves": fit_curves
     }
 
 
@@ -164,10 +174,11 @@ for result in results:
     st.markdown("---")
     st.subheader(f"Sample: {result['sample']}")
 
-    x_use    = result["x_use"]
-    y_raw    = result["y_raw"]
-    y_smooth = result["y_smooth"]
-    peaks    = result["peaks"]
+    x_use      = result["x_use"]
+    y_raw      = result["y_raw"]
+    y_smooth   = result["y_smooth"]
+    peaks      = result["peaks"]
+    fit_curves = result["fit_curves"]
 
     # ── Raw + Smooth overlay graph ───────────────────────────
     fig, ax = plt.subplots(figsize=(13, 5))
@@ -208,9 +219,20 @@ for result in results:
                 va="bottom"
             )
 
+    # Draw Lorentzian fit curves
+    for i, curve in enumerate(fit_curves):
+        label = "Lorentzian fit" if i == 0 else None
+        ax.plot(x_use, curve,
+                color="#FF8C00",
+                linewidth=1.4,
+                linestyle="-",
+                alpha=0.85,
+                label=label,
+                zorder=4)
+
     # Axis range & ticks
-    ax.set_xlim(-50, 450)
-    ax.set_ylim(0, 1500)
+    ax.set_xlim(0, 450)
+    ax.set_ylim(0, 500)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
     ax.xaxis.set_minor_locator(ticker.MultipleLocator(10))
     ax.yaxis.set_major_locator(ticker.AutoLocator())
@@ -310,3 +332,98 @@ ax2.set_ylim(-0.6, n_samples - 0.4)
 fig2.tight_layout()
 st.pyplot(fig2, use_container_width=True)
 plt.close(fig2)
+
+
+# ============================================================
+# STACKED OVERLAY COMPARISON GRAPH
+# ============================================================
+
+st.markdown("---")
+st.subheader("Stacked Spectrum Overlay — All Samples")
+
+OFFSET_STEP = 120   # vertical offset between samples
+
+fig3, ax3 = plt.subplots(figsize=(14, max(5, n_samples * 2 + 2)))
+
+colors3 = plt.cm.tab10(np.linspace(0, 0.9, max(n_samples, 1)))
+
+for i, result in enumerate(results):
+    x_use3   = result["x_use"]
+    signal3  = result["signal"]
+    offset   = i * OFFSET_STEP
+
+    mask = (x_use3 >= 0) & (x_use3 <= 450)
+
+    ax3.plot(x_use3[mask], signal3[mask] + offset,
+             color=colors3[i],
+             linewidth=1.2,
+             label=result["sample"],
+             zorder=3)
+
+    # Mark peaks
+    for pk in result["peaks"]:
+        sh = pk["shift"]
+        if 0 <= sh <= 450:
+            ax3.axvline(sh,
+                        color=colors3[i],
+                        linewidth=0.7,
+                        linestyle="--",
+                        alpha=0.5,
+                        zorder=2)
+            ax3.text(sh, offset + pk["intensity"] + 6,
+                     f"{sh:.0f}",
+                     ha="center",
+                     fontsize=6.5,
+                     color=colors3[i])
+
+ax3.set_xlim(0, 450)
+ax3.xaxis.set_major_locator(ticker.MultipleLocator(50))
+ax3.xaxis.set_minor_locator(ticker.MultipleLocator(10))
+ax3.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
+ax3.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
+ax3.grid(which="major", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
+ax3.grid(which="minor", linestyle=":",  linewidth=0.3, color="grey", alpha=0.2)
+ax3.set_xlabel("Raman Shift (cm⁻¹)", fontsize=11)
+ax3.set_ylabel("Intensity (a.u.) + offset", fontsize=11)
+ax3.set_title("Stacked Spectrum Overlay — All Samples",
+              fontsize=13, fontweight="bold", pad=12)
+ax3.legend(fontsize=8, loc="upper right", framealpha=0.85)
+ax3.set_yticks([])   # offsets make absolute y values meaningless
+
+fig3.tight_layout()
+st.pyplot(fig3, use_container_width=True)
+plt.close(fig3)
+
+
+# ============================================================
+# COMBINED PEAK TABLE + DOWNLOAD
+# ============================================================
+
+st.markdown("---")
+st.subheader("Combined Peak Table — All Samples")
+
+all_rows = []
+for result in results:
+    for pk in result["peaks"]:
+        all_rows.append({
+            "Sample":            result["sample"],
+            "Raman Shift (cm⁻¹)": pk["shift"],
+            "Intensity (a.u.)":  pk["intensity"],
+            "FWHM (cm⁻¹)":       pk["fwhm"]
+        })
+
+if all_rows:
+    df_all = pd.DataFrame(all_rows)
+    df_all.index = range(1, len(df_all) + 1)
+    st.dataframe(df_all, use_container_width=True)
+
+    csv_all = df_all.to_csv(index=True)
+    st.download_button(
+        "Download combined peak table (all samples)",
+        csv_all,
+        file_name="peaks_all_samples.csv",
+        mime="text/csv",
+        key="dl_combined"
+    )
+else:
+    st.info("No peaks detected across any sample.")
