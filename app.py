@@ -210,7 +210,7 @@ for result in results:
 
     # Axis range & ticks
     ax.set_xlim(0, 450)
-    ax.set_ylim(0, 500)
+    ax.set_ylim(0, 1500)
     ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
     ax.xaxis.set_minor_locator(ticker.MultipleLocator(10))
     ax.yaxis.set_major_locator(ticker.AutoLocator())
