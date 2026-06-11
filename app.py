@@ -170,66 +170,66 @@ for result in results:
     peaks    = result["peaks"]
 
     # ── Raw + Smooth overlay graph ───────────────────────────
-fig, ax = plt.subplots(figsize=(13, 5))
+    fig, ax = plt.subplots(figsize=(13, 5))
 
-ax.plot(x_use, y_raw,
-        color="#4C9BE8",
-        linewidth=0.8,
-        alpha=0.5,
-        label="Raw data",
-        zorder=2)
+    ax.plot(x_use, y_raw,
+            color="#4C9BE8",
+            linewidth=0.8,
+            alpha=0.5,
+            label="Raw data",
+            zorder=2)
 
-ax.plot(x_use, y_smooth,
-        color="#E84C4C",
-        linewidth=1.8,
-        alpha=0.92,
-        label="Smoothed",
-        zorder=3)
+    ax.plot(x_use, y_smooth,
+            color="#E84C4C",
+            linewidth=1.8,
+            alpha=0.92,
+            label="Smoothed",
+            zorder=3)
 
-# Mark detected peaks with vertical dashed lines + labels
-if peaks:
-    for pk in peaks:
-        sh  = pk["shift"]
-        idx = np.argmin(np.abs(x_use - sh))
-        ax.axvline(sh,
-                   color="#2CA02C",
-                   linewidth=0.9,
-                   linestyle="--",
-                   alpha=0.7,
-                   zorder=1)
-        ax.annotate(
-            f"{sh:.1f}",
-            xy=(sh, y_smooth[idx]),
-            xytext=(3, 8),
-            textcoords="offset points",
-            fontsize=7.5,
-            color="#2CA02C",
-            rotation=90,
-            va="bottom"
-        )
+    # Mark detected peaks with vertical dashed lines + labels
+    if peaks:
+        for pk in peaks:
+            sh  = pk["shift"]
+            idx = np.argmin(np.abs(x_use - sh))
+            ax.axvline(sh,
+                       color="#2CA02C",
+                       linewidth=0.9,
+                       linestyle="--",
+                       alpha=0.7,
+                       zorder=1)
+            ax.annotate(
+                f"{sh:.1f}",
+                xy=(sh, y_smooth[idx]),
+                xytext=(3, 8),
+                textcoords="offset points",
+                fontsize=7.5,
+                color="#2CA02C",
+                rotation=90,
+                va="bottom"
+            )
 
-# Axis range & ticks
-ax.set_xlim(0, 450)
-ax.set_ylim(0, 1500)
-ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
-ax.xaxis.set_minor_locator(ticker.MultipleLocator(10))
-ax.yaxis.set_major_locator(ticker.AutoLocator())
-ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(4))
-ax.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
-ax.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
+    # Axis range & ticks
+    ax.set_xlim(-50, 450)
+    ax.set_ylim(0, 1500)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(10))
+    ax.yaxis.set_major_locator(ticker.AutoLocator())
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(4))
+    ax.tick_params(axis="both", which="major", direction="in", length=5, width=0.8)
+    ax.tick_params(axis="both", which="minor", direction="in", length=2.5, width=0.6)
 
-ax.grid(which="major", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
-ax.grid(which="minor", linestyle=":",  linewidth=0.3, color="grey", alpha=0.25)
+    ax.grid(which="major", linestyle="--", linewidth=0.5, color="grey", alpha=0.4)
+    ax.grid(which="minor", linestyle=":",  linewidth=0.3, color="grey", alpha=0.25)
 
-ax.set_xlabel("Raman Shift (cm⁻¹)", fontsize=11)
-ax.set_ylabel("Intensity (a.u.)",    fontsize=11)
-ax.set_title(f"Raman Spectrum — {result['sample']}",
-             fontsize=12, fontweight="bold", pad=10)
-ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
+    ax.set_xlabel("Raman Shift (cm⁻¹)", fontsize=11)
+    ax.set_ylabel("Intensity (a.u.)",    fontsize=11)
+    ax.set_title(f"Raman Spectrum — {result['sample']}",
+                 fontsize=12, fontweight="bold", pad=10)
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.85)
 
-fig.tight_layout()
-st.pyplot(fig, use_container_width=True)
-plt.close(fig)
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
     # ── Peak table for this sample ───────────────────────────
     if peaks:
