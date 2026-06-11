@@ -44,25 +44,11 @@ def analyze_spectrum(uploaded_file):
     y = df.iloc[:, 1].values
 
     # --------------------------------------------------------
-    # RAYLEIGH CORRECTION — shift x so first zero crossing
-    # (negative-to-positive) maps to 0, not the maximum peak
+    # RAYLEIGH CORRECTION — shift x so argmax(y) maps to 0
     # --------------------------------------------------------
 
-    zero_crossing_idx = None
-    for i in range(len(y) - 1):
-        if y[i] <= 0 and y[i + 1] > 0:
-            zero_crossing_idx = i + 1
-            break
-
-    if zero_crossing_idx is not None:
-        x_shift = x[zero_crossing_idx]
-        x = x - x_shift
-
-    # --------------------------------------------------------
-    # USE ONLY POSITIVE RAMAN SHIFTS
-    # --------------------------------------------------------
-
-    x_use = x.copy()
+    max_idx = np.argmax(y)
+    x_use = x - x[max_idx]
     
     mask = x_use >= 0
     
