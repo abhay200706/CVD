@@ -61,9 +61,13 @@ def process_file(uploaded_file):
     x_roi = x_use[roi_mask]
     signal = signal[roi_mask]
 
-    mad = np.median(np.abs(signal - np.median(signal)))
+    # exclude dominant peak region from noise estimation
+    peak_exclusion_mask = (x_roi < 480)   # exclude the 522 spike area
+    signal_for_noise = signal[peak_exclusion_mask]
+    
+    mad       = np.median(np.abs(signal_for_noise - np.median(signal_for_noise)))
     noise_std = 1.4826 * mad
-    dynamic_prominence = 2.5 * noise_std
+    dynamic_prominence = 2.0 * noise_std
     dynamic_distance = 8
     dynamic_width = 2
 
