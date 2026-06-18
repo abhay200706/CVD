@@ -21,8 +21,8 @@ def process_file(uploaded_file):
         header=None
     )
 
-    x = df.iloc[:, 0].values
-    y = df.iloc[:, 1].values
+x = df.iloc[:, 0].values.copy()
+y = df.iloc[:, 1].values.copy()
 
     rayleigh_region = np.where(x < 100)[0]
     if len(rayleigh_region) == 0:
