@@ -67,7 +67,7 @@ def process_file(uploaded_file):
     
     mad       = np.median(np.abs(signal_for_noise - np.median(signal_for_noise)))
     noise_std = 1.4826 * mad
-    dynamic_prominence = 2.0 * noise_std
+    dynamic_prominence = 0.5* noise_std
     dynamic_distance = 5
     dynamic_width = 2
 
