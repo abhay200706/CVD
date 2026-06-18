@@ -71,17 +71,18 @@ def process_file(uploaded_file):
         return A * (gamma**2 / ((x - x0)**2 + gamma**2))
 
     # cm⁻¹ per data point — scales kernel to physical units
-    cm_per_point = (x_roi[-1] - x_roi[0]) / len(x_roi)
-    
-    gamma_filter_cm  = 10.0                        # half-width in cm⁻¹
-    gamma_filter_pts = gamma_filter_cm / cm_per_point   # convert to points
-    
-    support = int(5 * gamma_filter_pts)            # kernel spans ±5 half-widths
-    kernel_x = np.arange(-support, support + 1, dtype=float)
-    kernel   = lorentzian(kernel_x, 0, gamma_filter_pts, 1.0)
-    kernel  /= kernel.sum()
+cm_per_point = (x_roi[-1] - x_roi[0]) / len(x_roi)
+
+gamma_filter_cm  = 10.0                        # half-width in cm⁻¹
+gamma_filter_pts = gamma_filter_cm / cm_per_point   # convert to points
+
+support = int(5 * gamma_filter_pts)            # kernel spans ±5 half-widths
+kernel_x = np.arange(-support, support + 1, dtype=float)
+kernel   = lorentzian(kernel_x, 0, gamma_filter_pts, 1.0)
+kernel  /= kernel.sum()
 
 signal_enhanced = fftconvolve(signal, kernel, mode="same")
+
 
     candidate_peaks, _ = find_peaks(
         signal_enhanced,
