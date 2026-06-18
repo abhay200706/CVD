@@ -68,7 +68,7 @@ def process_file(uploaded_file):
     mad       = np.median(np.abs(signal_for_noise - np.median(signal_for_noise)))
     noise_std = 1.4826 * mad
     dynamic_prominence = 2.0 * noise_std
-    dynamic_distance = 8
+    dynamic_distance = 5
     dynamic_width = 2
 
     def lorentzian(x, x0, gamma, A):
@@ -114,7 +114,7 @@ def process_file(uploaded_file):
         if len(noise_local) == 0:
             continue
         snr = peak_height / (np.std(noise_local) + 1e-9)
-        if snr < 2.0:
+        if snr < 1.5:
             continue
         filtered_peaks.append(p)
 
