@@ -1,177 +1,226 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import pywt
+import plotly.graph_objects as go
 import streamlit as st
+from scipy.signal import find_peaks, savgol_filter
 
-from scipy.signal import savgol_filter, find_peaks, fftconvolve
-from scipy.optimize import curve_fit
-from scipy.sparse import diags
-from scipy.sparse.linalg import spsolve
-from io import StringIO
+st.set_page_config(page_title="Raman Compound Detector", layout="wide")
+
+MAX_SHIFT_DEFAULT = 550.0
+TARGET_POINTS = 1024
 
 
-def process_file(uploaded_file):
+def read_spectrum(uploaded_file):
+    text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+    rows = []
+    for line in text.splitlines():
+        parts = line.replace(",", " ").split()
+        if len(parts) >= 2:
+            try:
+                rows.append((float(parts[0]), float(parts[1])))
+            except ValueError:
+                continue
+    if not rows:
+        raise ValueError("No numeric two-column data found in file.")
+    df = pd.DataFrame(rows, columns=["raman_shift", "intensity"])
+    df = df.dropna().drop_duplicates().sort_values("raman_shift").reset_index(drop=True)
+    return df
 
-    content = uploaded_file.read().decode("utf-8")
-    df = pd.read_csv(
-        StringIO(content),
-        sep=r"\s+|,|\t",
-        engine="python",
-        header=None
+
+def preprocess(df, max_shift=MAX_SHIFT_DEFAULT, target_points=TARGET_POINTS):
+    roi = df[(df["raman_shift"] >= 0) & (df["raman_shift"] < max_shift)].copy()
+    if len(roi) < 20:
+        raise ValueError("Not enough points in Raman shift < 550 region.")
+    x = roi["raman_shift"].to_numpy()
+    y = roi["intensity"].to_numpy()
+
+    x_new = np.linspace(x.min(), x.max(), target_points)
+    y_new = np.interp(x_new, x, y)
+
+    window = 15
+    if window >= len(y_new):
+        window = len(y_new) - 1 if len(y_new) % 2 == 0 else len(y_new)
+    if window < 5:
+        window = 5
+    if window % 2 == 0:
+        window += 1
+
+    y_smooth = savgol_filter(y_new, window_length=window, polyorder=3)
+    baseline = pd.Series(y_smooth).rolling(101, center=True, min_periods=1).quantile(0.1).to_numpy()
+    y_corr = y_smooth - baseline
+    y_norm = (y_corr - y_corr.mean()) / (y_corr.std() + 1e-8)
+
+    return pd.DataFrame({
+        "raman_shift": x_new,
+        "intensity_interp": y_new,
+        "smooth": y_smooth,
+        "baseline": baseline,
+        "corrected": y_corr,
+        "normalized": y_norm
+    })
+
+
+def detect_peaks(proc_df, prominence=0.7, distance=8):
+    x = proc_df["raman_shift"].to_numpy()
+    y = proc_df["normalized"].to_numpy()
+    idx, props = find_peaks(y, prominence=prominence, distance=distance)
+
+    peaks = pd.DataFrame({
+        "peak_shift": x[idx],
+        "peak_height_norm": y[idx],
+        "prominence": props.get("prominences", np.zeros(len(idx)))
+    }).sort_values("prominence", ascending=False).reset_index(drop=True)
+    return peaks
+
+
+def simple_compound_match(peaks_df):
+    peak_positions = peaks_df["peak_shift"].round(1).tolist()
+
+    reference_db = {
+        "Sulfur-like": [82, 150, 220, 440, 473],
+        "Calcite-like": [108, 156, 281],
+        "Gypsum-like": [100, 113, 414, 492],
+        "Quartz-like": [128, 206, 265, 355, 465],
+        "Graphite-like": [135]
+    }
+
+    tolerance = 12
+    scores = {}
+
+    for compound, refs in reference_db.items():
+        score = 0
+        for r in refs:
+            for p in peak_positions:
+                if abs(p - r) <= tolerance:
+                    score += 1
+                    break
+        scores[compound] = score / max(len(refs), 1)
+
+    best_compound = max(scores, key=scores.get)
+    confidence = scores[best_compound]
+
+    return {
+        "predicted_compound": best_compound,
+        "confidence": round(float(confidence), 3),
+        "all_scores": scores
+    }
+
+
+def plot_spectrum(proc_df, peaks_df):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=proc_df["raman_shift"],
+        y=proc_df["intensity_interp"],
+        mode="lines",
+        name="Interpolated raw"
+    ))
+    fig.add_trace(go.Scatter(
+        x=proc_df["raman_shift"],
+        y=proc_df["smooth"],
+        mode="lines",
+        name="Smoothed"
+    ))
+    fig.add_trace(go.Scatter(
+        x=proc_df["raman_shift"],
+        y=proc_df["baseline"],
+        mode="lines",
+        name="Baseline"
+    ))
+    fig.add_trace(go.Scatter(
+        x=proc_df["raman_shift"],
+        y=proc_df["normalized"],
+        mode="lines",
+        name="Normalized corrected"
+    ))
+
+    if not peaks_df.empty:
+        fig.add_trace(go.Scatter(
+            x=peaks_df["peak_shift"],
+            y=peaks_df["peak_height_norm"],
+            mode="markers",
+            name="Detected peaks",
+            marker=dict(size=9, color="red")
+        ))
+
+    fig.update_layout(
+        height=520,
+        xaxis_title="Raman shift (cm^-1)",
+        yaxis_title="Intensity / normalized intensity",
+        title="Raman Spectrum Analysis"
     )
-
-    x = df.iloc[:, 0].values.copy()
-    y = df.iloc[:, 1].values.copy()
-
-    rayleigh_region = np.where(x < 100)[0]
-    if len(rayleigh_region) == 0:
-        rayleigh_idx = np.argmax(y)
-    else:
-        rayleigh_idx = rayleigh_region[np.argmax(y[rayleigh_region])]
-    x_use = x - x[rayleigh_idx]
-
-    wavelet = "sym8"
-    level = pywt.dwt_max_level(len(y), wavelet)
-    coeffs = pywt.wavedec(y, wavelet, level=level)
-    sigma_wav = np.median(np.abs(coeffs[-1])) / 0.6745
-    threshold = sigma_wav * np.sqrt(2 * np.log(len(y)))
-    coeffs_thresh = [coeffs[0]] + [
-        pywt.threshold(c, threshold, mode="soft") for c in coeffs[1:]
-    ]
-    y_smooth = pywt.waverec(coeffs_thresh, wavelet)
-    y_smooth = y_smooth[:len(y)]
-
-    def als_baseline(y_in, lam=1e5, p=0.01, n_iter=10):
-        L = len(y_in)
-        D = diags([1, -2, 1], [0, 1, 2], shape=(L-2, L))
-        H = lam * D.T @ D
-        w = np.ones(L)
-        for _ in range(n_iter):
-            W = diags(w, 0, shape=(L, L))
-            baseline = spsolve(W + H, w * y_in)
-            w = np.where(y_in > baseline, p, 1 - p)
-        return baseline
-
-    baseline = als_baseline(y_smooth, lam=1e5, p=0.01)
-    signal = y_smooth - baseline
-    signal = np.clip(signal, 0, None)
-
-    roi_mask = (x_use >= 0) & (x_use <= 550)
-    x_roi = x_use[roi_mask]
-    signal = signal[roi_mask]
-
-    # exclude dominant peak region from noise estimation
-    peak_exclusion_mask = (x_roi < 480)   # exclude the 522 spike area
-    signal_for_noise = signal[peak_exclusion_mask]
-    
-    mad       = np.median(np.abs(signal_for_noise - np.median(signal_for_noise)))
-    noise_std = 1.4826 * mad
-    dynamic_prominence = 0.01* noise_std
-    dynamic_distance = 5
-    dynamic_width = 2
-
-    def lorentzian(x, x0, gamma, A):
-        return A * (gamma**2 / ((x - x0)**2 + gamma**2))
-
-        # cm⁻¹ per data point — scales kernel to physical units
-    cm_per_point = (x_roi[-1] - x_roi[0]) / len(x_roi)
-    
-    gamma_filter_cm  = 10.0                        # half-width in cm⁻¹
-    gamma_filter_pts = gamma_filter_cm / cm_per_point   # convert to points
-    
-    support = int(5 * gamma_filter_pts)            # kernel spans ±5 half-widths
-    kernel_x = np.arange(-support, support + 1, dtype=float)
-    kernel   = lorentzian(kernel_x, 0, gamma_filter_pts, 1.0)
-    kernel  /= kernel.sum()
-    
-    signal_enhanced = fftconvolve(signal, kernel, mode="same")
+    return fig
 
 
-    candidate_peaks, _ = find_peaks(
-        signal_enhanced,
-        prominence=dynamic_prominence,
-        distance=dynamic_distance,
-        width=dynamic_width
-    )
+st.title("Raman Compound Detector")
+st.write("Upload a Raman TXT or CSV file. The app automatically preprocesses the data, detects peaks below 550 cm^-1, and predicts the most likely compound pattern.")
 
-    filtered_peaks = []
-    for p in candidate_peaks:
-        peak_height = signal[p]
-        half_height = peak_height / 2
-        left = p
-        while left > 0 and signal[left] > half_height:
-            left -= 1
-        right = p
-        while right < len(signal) - 1 and signal[right] > half_height:
-            right += 1
-        width_cm = x_roi[right] - x_roi[left]
-        if width_cm < 2.0:
-            continue
-        left_noise = signal[max(0, p-30):max(0, p-10)]
-        right_noise = signal[min(len(signal), p+10):min(len(signal), p+30)]
-        noise_local = np.concatenate([left_noise, right_noise])
-        if len(noise_local) == 0:
-            continue
-        snr = peak_height / (np.std(noise_local) + 1e-9)
-        if snr < 1.5:
-            continue
-        filtered_peaks.append(p)
+uploaded = st.file_uploader("Upload Raman TXT/CSV file", type=["txt", "csv"])
 
-    candidate_peaks = np.array(filtered_peaks)
+if uploaded is not None:
+    try:
+        raw_df = read_spectrum(uploaded)
+        proc_df = preprocess(raw_df, max_shift=550.0)
+        peaks_df = detect_peaks(proc_df, prominence=0.7, distance=8)
+        result = simple_compound_match(peaks_df)
 
-    final_peaks = []
-    for p in candidate_peaks:
-        try:
-            left = max(0, p - 15)
-            right = min(len(signal)-1, p + 15)
-            x_fit = x_roi[left:right]
-            y_fit = signal[left:right]
-            p0 = [x_roi[p], 5, signal[p]]
-            popt, _ = curve_fit(lorentzian, x_fit, y_fit, p0=p0)
-            x0, gamma, A = popt
-            final_peaks.append((x0, A))
-        except:
-            continue
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Raw points", len(raw_df))
+        c2.metric("ROI points (<550)", len(proc_df))
+        c3.metric("Detected peaks", len(peaks_df))
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(x_roi, signal, label="Processed Signal")
-    for peak in final_peaks:
-        ax.scatter(peak[0], peak[1], color="red", s=100)
-    ax.set_title("Final Peaks After Lorentzian Fit")
-    ax.set_xlabel("Shifted x-axis")
-    ax.set_ylabel("Intensity")
-    ax.set_xlim(0, None)
-    ax.set_ylim(0, 1000)
-    ax.grid()
+        st.plotly_chart(plot_spectrum(proc_df, peaks_df), use_container_width=True)
 
-    return noise_std, dynamic_prominence, candidate_peaks, x_roi, signal, final_peaks, fig
+        left, right = st.columns([1.3, 1])
 
+        with left:
+            st.subheader("Detected peaks")
+            st.dataframe(peaks_df, use_container_width=True)
 
-uploaded_files = st.file_uploader(
-    "Upload spectra files",
-    accept_multiple_files=True
-)
+        with right:
+            st.subheader("Predicted compound")
+            st.success(f"Most likely: {result['predicted_compound']}")
+            st.write(f"Confidence score: {result['confidence']}")
+            st.json(result["all_scores"])
 
-if uploaded_files:
-    for uploaded_file in uploaded_files:
-        st.write(f"### {uploaded_file.name}")
-        try:
-            noise_std, dynamic_prominence, candidate_peaks, x_roi, signal, final_peaks, fig = process_file(uploaded_file)
+        export = {
+            "predicted_compound": result["predicted_compound"],
+            "confidence": result["confidence"],
+            "detected_peak_count": int(len(peaks_df)),
+            "peak_positions_cm-1": peaks_df["peak_shift"].round(3).tolist()
+        }
 
-            st.write(f"Estimated Noise STD (MAD) = {noise_std:.4f}")
-            st.write(f"Dynamic Prominence = {dynamic_prominence:.4f}")
+        st.download_button(
+            "Download results JSON",
+            data=json.dumps(export, indent=2),
+            file_name="raman_result.json",
+            mime="application/json"
+        )
 
-            st.write("**Candidate Peaks:**")
-            for p in candidate_peaks:
-                st.write(f"x = {x_roi[p]:.2f} cm⁻¹ , intensity = {signal[p]:.2f}")
+        st.download_button(
+            "Download peaks CSV",
+            data=peaks_df.to_csv(index=False),
+            file_name="raman_peaks.csv",
+            mime="text/csv"
+        )
 
-            st.write("**Final Peaks After Lorentzian Fit:**")
-            for peak in final_peaks:
-                st.write(f"x = {peak[0]:.2f} , intensity = {peak[1]:.2f}")
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
 
-            st.pyplot(fig)
-            plt.close(fig)
+else:
+    st.markdown("""
+### Expected file format
+Two numeric columns:
 
-        except Exception as e:
-            st.write(f"Error processing {uploaded_file.name}: {e}")
+- Column 1: Raman shift
+- Column 2: Intensity
+
+Example:
+```text
+0.72 481.9
+2.07 479.9
+3.42 479.8
+```
+""")
