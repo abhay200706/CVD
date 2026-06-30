@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import io
-import zipfile
 
 st.title("Rayleigh Corrected Raman Data")
 
@@ -14,8 +13,6 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     corrected_results = {}  # filename -> corrected_data (numpy array)
-
-    fig, ax = plt.subplots(figsize=(10, 6))
 
     for file in uploaded_files:
         data = np.loadtxt(file)
@@ -30,29 +27,43 @@ if uploaded_files:
         corrected_data = np.column_stack((corrected_shift, intensity))
         corrected_results[file.name] = corrected_data
 
-        ax.plot(corrected_shift, intensity, label=file.name)
+        st.subheader(file.name)
 
-    ax.set_xlim(-50, 550)
-    ax.set_ylim(300, 1200)
-    ax.set_xlabel("Raman Shift (cm-1)")
-    ax.set_ylabel("Intensity")
-    ax.set_title("Overlapping Rayleigh Corrected Raman Spectra")
-    ax.legend(fontsize=7)
-    st.pyplot(fig)
+        # Individual plot: original vs corrected, overlapping
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(raman_shift, intensity, label="Original", alpha=0.7)
+        ax.plot(corrected_shift, intensity, label="Rayleigh Corrected", alpha=0.7)
+        ax.set_xlim(-50, 550)
+        ax.set_ylim(300, 1200)
+        ax.set_xlabel("Raman Shift (cm-1)")
+        ax.set_ylabel("Intensity")
+        ax.set_title(file.name)
+        ax.legend()
+        st.pyplot(fig)
 
-    # Zip all corrected txt files together for download
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for name, corrected_data in corrected_results.items():
-            txt_buffer = io.StringIO()
-            np.savetxt(txt_buffer, corrected_data, fmt="%.4f")
-            out_name = name.replace(".txt", "_rayleigh_corrected.txt")
-            zf.writestr(out_name, txt_buffer.getvalue())
+        # Individual download button for this file's corrected data
+        txt_buffer = io.StringIO()
+        np.savetxt(txt_buffer, corrected_data, fmt="%.4f")
+        out_name = file.name.replace(".txt", "_rayleigh_corrected.txt")
+        st.download_button(
+            label=f"Download corrected file: {out_name}",
+            data=txt_buffer.getvalue(),
+            file_name=out_name,
+            mime="text/plain",
+            key=out_name
+        )
 
-    zip_buffer.seek(0)
-    st.download_button(
-        label="Download all Rayleigh corrected txt files (zip)",
-        data=zip_buffer,
-        file_name="rayleigh_corrected_data.zip",
-        mime="application/zip"
-    )
+        st.markdown("---")
+
+    # Final combined plot: all corrected files overlapping
+    st.subheader("All Rayleigh Corrected Spectra (Overlapping)")
+    fig_all, ax_all = plt.subplots(figsize=(10, 6))
+    for name, corrected_data in corrected_results.items():
+        ax_all.plot(corrected_data[:, 0], corrected_data[:, 1], label=name)
+    ax_all.set_xlim(-50, 550)
+    ax_all.set_ylim(300, 1200)
+    ax_all.set_xlabel("Raman Shift (cm-1)")
+    ax_all.set_ylabel("Intensity")
+    ax_all.set_title("Overlapping Rayleigh Corrected Raman Spectra")
+    ax_all.legend(fontsize=7)
+    st.pyplot(fig_all)
