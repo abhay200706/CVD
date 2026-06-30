@@ -2,17 +2,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks, savgol_filter
+import pywt
+from scipy.signal import find_peaks
+from scipy.sparse import diags
+from scipy.sparse.linalg import spsolve
+from scipy.optimize import curve_fit
 
 st.set_page_config(page_title="Raman Peak Detector", layout="centered")
 
 ROI_MIN = 50.0
 ROI_MAX = 490.0
-TARGET_POINTS = 1024
 
 
 # ---------------------------------------------------------
-# STEP 1: Read raw spectrum file
+# STEP 0: Read raw spectrum file
 # ---------------------------------------------------------
 def read_spectrum(uploaded_file):
     text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
@@ -30,26 +33,64 @@ def read_spectrum(uploaded_file):
 
 
 # ---------------------------------------------------------
-# STEP 2: Rayleigh correction (remove strong low-shift tail)
+# STEP 1: Rayleigh alignment (shift Rayleigh peak to 0 cm-1)
 # ---------------------------------------------------------
-def rayleigh_correction(df):
+def rayleigh_alignment(df):
     x = df["raman_shift"].to_numpy()
     y = df["intensity"].to_numpy()
 
-    # estimate the Rayleigh tail using a rolling minimum at the low end
-    tail_mask = x < ROI_MIN
-    if tail_mask.sum() > 5:
-        tail_level = np.percentile(y[tail_mask], 10)
-    else:
-        tail_level = np.percentile(y, 1)
-
-    y_corrected = y - tail_level
-    y_corrected[y_corrected < 0] = 0
-    return pd.DataFrame({"raman_shift": x, "intensity": y_corrected})
+    rayleigh_idx = np.argmax(y)
+    shift = x[rayleigh_idx]
+    x_aligned = x - shift
+    return pd.DataFrame({"raman_shift": x_aligned, "intensity": y})
 
 
 # ---------------------------------------------------------
-# STEP 3: Restrict to region of interest (50-490 cm-1)
+# STEP 2: Wavelet denoising
+# ---------------------------------------------------------
+def wavelet_denoise(df, wavelet="db4", level=4):
+    y = df["intensity"].to_numpy()
+
+    coeffs = pywt.wavedec(y, wavelet, level=level)
+    sigma = np.median(np.abs(coeffs[-1])) / 0.6745
+    threshold = sigma * np.sqrt(2 * np.log(len(y)))
+
+    coeffs[1:] = [pywt.threshold(c, threshold, mode="soft") for c in coeffs[1:]]
+    y_denoised = pywt.waverec(coeffs, wavelet)[: len(y)]
+
+    out = df.copy()
+    out["intensity"] = y_denoised
+    return out
+
+
+# ---------------------------------------------------------
+# STEP 3: ALS baseline removal
+# ---------------------------------------------------------
+def als_baseline(y, lam=1e5, p=0.01, n_iter=10):
+    L = len(y)
+    D = diags([1, -2, 1], [0, -1, -2], shape=(L, L - 2))
+    D = lam * D.dot(D.transpose())
+    w = np.ones(L)
+    W = diags(w, 0, shape=(L, L))
+
+    for _ in range(n_iter):
+        W.setdiag(w)
+        Z = W + D
+        baseline = spsolve(Z, w * y)
+        w = p * (y > baseline) + (1 - p) * (y < baseline)
+    return baseline
+
+
+def remove_baseline(df):
+    y = df["intensity"].to_numpy()
+    baseline = als_baseline(y)
+    out = df.copy()
+    out["intensity"] = y - baseline
+    return out
+
+
+# ---------------------------------------------------------
+# STEP 4: ROI selection (50-490 cm-1)
 # ---------------------------------------------------------
 def select_roi(df, roi_min=ROI_MIN, roi_max=ROI_MAX):
     roi = df[(df["raman_shift"] >= roi_min) & (df["raman_shift"] <= roi_max)].copy()
@@ -57,58 +98,82 @@ def select_roi(df, roi_min=ROI_MIN, roi_max=ROI_MAX):
 
 
 # ---------------------------------------------------------
-# STEP 4: Interpolate to a uniform grid + smooth + baseline
+# STEP 5: Noise estimation (MAD estimator)
 # ---------------------------------------------------------
-def preprocess(roi_df, target_points=TARGET_POINTS):
-    x = roi_df["raman_shift"].to_numpy()
-    y = roi_df["intensity"].to_numpy()
-
-    x_new = np.linspace(x.min(), x.max(), target_points)
-    y_new = np.interp(x_new, x, y)
-
-    window = 15 if target_points > 15 else 5
-    if window % 2 == 0:
-        window += 1
-    y_smooth = savgol_filter(y_new, window_length=window, polyorder=3)
-
-    baseline = pd.Series(y_smooth).rolling(101, center=True, min_periods=1).quantile(0.1).to_numpy()
-    y_corr = y_smooth - baseline
-
-    return pd.DataFrame({"raman_shift": x_new, "intensity": y_corr})
+def estimate_noise_mad(y):
+    median = np.median(y)
+    mad = np.median(np.abs(y - median))
+    return mad / 0.6745
 
 
 # ---------------------------------------------------------
-# STEP 5: Detect candidate peaks
+# STEP 6: Peak enhancement (Lorentzian matched filter)
 # ---------------------------------------------------------
-def detect_candidate_peaks(proc_df, prominence=0.05, distance=8):
-    x = proc_df["raman_shift"].to_numpy()
-    y = proc_df["intensity"].to_numpy()
-    y_norm = y / (y.max() + 1e-8)
+def lorentzian_kernel(width, gamma):
+    half = width // 2
+    t = np.arange(-half, half + 1)
+    kernel = 1.0 / (1.0 + (t / gamma) ** 2)
+    return kernel / kernel.sum()
 
-    idx, props = find_peaks(y_norm, prominence=prominence, distance=distance)
+
+def matched_filter(y, gamma=3.0, width=21):
+    kernel = lorentzian_kernel(width, gamma)
+    return np.convolve(y, kernel, mode="same")
+
+
+# ---------------------------------------------------------
+# STEP 7: Candidate peak detection (high recall)
+# ---------------------------------------------------------
+def detect_candidate_peaks(x, y_filtered, noise_level, prominence_mult=2.0, min_distance=4, min_width=2):
+    prominence = prominence_mult * noise_level
+    idx, props = find_peaks(y_filtered, prominence=prominence, distance=min_distance, width=min_width)
+
     candidates = pd.DataFrame({
         "peak_shift": x[idx],
-        "intensity": y[idx],
-        "prominence": props.get("prominences", np.zeros(len(idx)))
-    }).sort_values("prominence", ascending=False).reset_index(drop=True)
+        "intensity": y_filtered[idx],
+        "prominence": props.get("prominences", np.zeros(len(idx))),
+        "width": props.get("widths", np.zeros(len(idx)))
+    }).sort_values("peak_shift").reset_index(drop=True)
     return candidates
 
 
 # ---------------------------------------------------------
-# STEP 6: Filter candidates down to final peaks
+# STEP 8: Lorentzian peak refinement (fit each candidate)
 # ---------------------------------------------------------
-def select_final_peaks(candidates, top_n=10, min_prominence=0.08):
-    final = candidates[candidates["prominence"] >= min_prominence]
-    final = final.sort_values("peak_shift").reset_index(drop=True)
-    return final.head(top_n)
+def lorentzian(x, x0, A, gamma):
+    return A / (1.0 + ((x - x0) / gamma) ** 2)
+
+
+def refine_peaks(x, y, candidates, fit_window=15):
+    refined = []
+    for _, row in candidates.iterrows():
+        center_idx = np.argmin(np.abs(x - row["peak_shift"]))
+        lo = max(0, center_idx - fit_window)
+        hi = min(len(x), center_idx + fit_window)
+        x_win = x[lo:hi]
+        y_win = y[lo:hi]
+
+        try:
+            popt, _ = curve_fit(
+                lorentzian, x_win, y_win,
+                p0=[row["peak_shift"], row["intensity"], 3.0],
+                maxfev=2000
+            )
+            x0, A, gamma = popt
+        except RuntimeError:
+            x0, A, gamma = row["peak_shift"], row["intensity"], row["width"]
+
+        refined.append({"peak_shift": x0, "intensity": A, "width": gamma})
+
+    return pd.DataFrame(refined).sort_values("peak_shift").reset_index(drop=True)
 
 
 # ---------------------------------------------------------
-# STEP 7: Plot region of interest
+# STEP 9: Plot region of interest
 # ---------------------------------------------------------
-def plot_roi(proc_df, final_peaks):
+def plot_roi(x, y, final_peaks):
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(proc_df["raman_shift"], proc_df["intensity"], color="black", linewidth=1)
+    ax.plot(x, y, color="black", linewidth=1)
     ax.scatter(final_peaks["peak_shift"], final_peaks["intensity"], color="red", zorder=5)
     ax.set_xlim(ROI_MIN, ROI_MAX)
     ax.set_ylim(100, 1200)
@@ -127,17 +192,24 @@ uploaded = st.file_uploader("Upload Raman TXT/CSV file", type=["txt", "csv"])
 
 if uploaded is not None:
     raw_df = read_spectrum(uploaded)
-    corrected_df = rayleigh_correction(raw_df)
-    roi_df = select_roi(corrected_df)
-    proc_df = preprocess(roi_df)
+    aligned_df = rayleigh_alignment(raw_df)
+    denoised_df = wavelet_denoise(aligned_df)
+    debaselined_df = remove_baseline(denoised_df)
+    roi_df = select_roi(debaselined_df)
 
-    candidates = detect_candidate_peaks(proc_df)
-    final_peaks = select_final_peaks(candidates)
+    x = roi_df["raman_shift"].to_numpy()
+    y = roi_df["intensity"].to_numpy()
+
+    noise_level = estimate_noise_mad(y)
+    y_filtered = matched_filter(y)
+
+    candidates = detect_candidate_peaks(x, y_filtered, noise_level)
+    final_peaks = refine_peaks(x, y, candidates)
 
     st.subheader("Candidate peaks")
-    st.dataframe(candidates[["peak_shift", "prominence"]], use_container_width=True)
+    st.dataframe(candidates[["peak_shift", "prominence", "width"]], use_container_width=True)
 
     st.subheader("Final peaks")
-    st.dataframe(final_peaks[["peak_shift", "intensity"]], use_container_width=True)
+    st.dataframe(final_peaks[["peak_shift", "intensity", "width"]], use_container_width=True)
 
-    st.pyplot(plot_roi(proc_df, final_peaks))
+    st.pyplot(plot_roi(x, y, final_peaks))
