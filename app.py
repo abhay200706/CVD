@@ -49,7 +49,7 @@ def rayleigh_alignment(df):
 # STEP 2: Wavelet denoising
 # ---------------------------------------------------------
 def wavelet_denoise(df, wavelet="db4", level=4):
-    y = np.ascontiguousarray(df["intensity"].to_numpy(), dtype=np.float64)
+    y = np.array(df["intensity"].to_numpy(), dtype=np.float64, copy=True)
 
     max_level = pywt.dwt_max_level(len(y), pywt.Wavelet(wavelet).dec_len)
     level = min(level, max_level)
